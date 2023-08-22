@@ -201,7 +201,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not osp.exists(args.output):
         os.makedirs(args.output, exist_ok=True)
-    enl = TextRNet_HRNet_Wrapper(torch.device("cuda:0"), 'pretrained/texrnet_hrnet.pth')
+    enl = TextRNet_HRNet_Wrapper("cuda", 'pretrained/texrnet_hrnet.pth')
 
     dataset = TextOCRDataset(data_path=args.data_path, slice_idx=args.slice_idx)
     
