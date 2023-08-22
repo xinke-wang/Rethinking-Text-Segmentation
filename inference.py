@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import os.path as osp
 
 import numpy as np
 import torch
@@ -14,14 +15,26 @@ from lib.model_zoo.texrnet import TexRNet
 
 class TextOCRDataset:
     
-    def __init__(self, data_path='/media/xinyu/SSD1T/data/TextOCR') -> None:
+    def __init__(self, data_path='/media/xinyu/SSD1T/data/TextOCR', n=10, slice_idx=0) -> None:
         self.data_path = data_path
         with open(os.path.join(data_path, 'annotations/TextOCR_0.1_train.json'), 'r') as f:
             data = json.load(f)
+        self.captions = {}
+        # with open(os.path.join(data_path, 'annotations/TextCaps_0.1_train.json'), 'r') as f:
+        #     caps = json.load(f)
+        #     caps = caps['data']
+        #     for cap in caps:
+        #         self.captions[cap['image_id']] = cap['caption_str']
+                
         self.images = list(data['imgs'].values())
         self.anns = data['anns']
         self.img2anns = data['imgToAnns']
         
+        total_images = len(self.images)
+        images_per_slice = total_images // n
+        start_idx = slice_idx * images_per_slice
+        end_idx = start_idx + images_per_slice if slice_idx != n - 1 else total_images
+        self.images = self.images[start_idx:end_idx]
 
     def __len__(self):
         return len(self.images)
@@ -183,14 +196,20 @@ class TextRNet_HRNet_Wrapper(object):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_path", type=str, default='/media/xinyu/SSD1T/data/TextOCR')
-    parser.add_argument("--output", type=str, default='/media/xinyu/SSD1T/data/TextOCR/masks_withbox/')
+    parser.add_argument("--output", type=str, default='/media/xinyu/SSD1T/data/TextOCR/masks/')
+    parser.add_argument("--slice_idx", type=int, default=0)
     args = parser.parse_args()
+    if not osp.exists(args.output):
+        os.makedirs(args.output, exist_ok=True)
     enl = TextRNet_HRNet_Wrapper(torch.device("cuda:0"), 'pretrained/texrnet_hrnet.pth')
 
-    dataset = TextOCRDataset()
+    dataset = TextOCRDataset(data_path=args.data_path, slice_idx=args.slice_idx)
     
 
     for fin, bboxes in tqdm(dataset):
+        save_path = os.path.join(args.output, os.path.basename(fin))
+        if osp.exists(save_path):
+            continue
         x = Image.open(fin).convert('RGB')
         mask = enl.process(x)
         for bbox in bboxes:
@@ -200,4 +219,4 @@ if __name__ == "__main__":
             mask_tmp = Image.new("L", x.size)
             mask_tmp.paste(text_mask, (bbox[0], bbox[1]))
             mask = ImageChops.add(mask, mask_tmp)
-        mask.save(os.path.join(args.output, os.path.basename(fin)))
+        mask.save(save_path)
