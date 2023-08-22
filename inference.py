@@ -1,19 +1,41 @@
-import torch
-
-import os
-import os.path as osp
-import numpy as np
-from PIL import Image
-
 import argparse
+import json
+import os
 
-from lib.model_zoo.texrnet import TexRNet
-from lib.model_zoo.hrnet import HRNet_Base
-from lib.model_zoo.deeplab import DeepLabv3p_Base
-from lib.model_zoo.resnet import ResNet_Dilated_Base
+import numpy as np
+import torch
+from PIL import Image, ImageChops
+from tqdm import tqdm
+
 from lib import torchutils
+from lib.model_zoo.hrnet import HRNet_Base
+from lib.model_zoo.texrnet import TexRNet
 
-import tqdm
+
+class TextOCRDataset:
+    
+    def __init__(self, data_path='/media/xinyu/SSD1T/data/TextOCR') -> None:
+        self.data_path = data_path
+        with open(os.path.join(data_path, 'annotations/TextOCR_0.1_train.json'), 'r') as f:
+            data = json.load(f)
+        self.images = list(data['imgs'].values())
+        self.anns = data['anns']
+        self.img2anns = data['imgToAnns']
+        
+
+    def __len__(self):
+        return len(self.images)
+    
+    def __getitem__(self, idx):
+        img_path = os.path.join(self.data_path, 'images', self.images[idx]['file_name'])
+        gt_bboxes = []
+        for gt_id in self.img2anns[self.images[idx]['id']]:
+            bbox = self.anns[gt_id]['bbox']
+            bbox[2] = bbox[0] + bbox[2]
+            bbox[3] = bbox[1] + bbox[3]
+            gt_bboxes.append(bbox)
+        
+        return img_path, gt_bboxes
 
 class TextRNet_HRNet_Wrapper(object):
     """
@@ -158,81 +180,24 @@ class TextRNet_HRNet_Wrapper(object):
         pred = (pred * 255).astype(np.uint8)
         return Image.fromarray(pred)
 
-class TextRNet_Deeplab_Wrapper(TextRNet_HRNet_Wrapper):
-    @staticmethod
-    def make_model(pth=None):
-        raise NotImplementedError
-        # resnet = ResNet_Dilated_Base(
-        #     block = 
-        #     layer_n = 
-        # )
-        
-        # model = TexRNet(
-        #     bbn_name='hrnet',
-        #     bbn=backbone,
-        #     ic_n=720,
-        #     rfn_c_n=[725, 64, 64],
-        #     sem_n=2,
-        #     conv_type='conv',
-        #     bn_type='bn',
-        #     relu_type='relu',
-        #     align_corners=True,
-        #     ignore_label=None,
-        #     bias_att_type='cossim',
-        #     ineval_output_argmax=False,
-        # )
-        # if pth is not None:
-        #     paras = torch.load(pth, map_location=torch.device('cpu'))
-        #     new_paras = model.state_dict()
-        #     new_paras.update(paras)
-        #     model.load_state_dict(new_paras)
-        # return model
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", type=str, required=True, help="input folder or a single input file")
-    parser.add_argument("--output", type=str, required=True, help="output folder or a single output file")
-    parser.add_argument("--method", '-m', type=str, default='textrnet_hrnet')
+    parser.add_argument("--data_path", type=str, default='/media/xinyu/SSD1T/data/TextOCR')
+    parser.add_argument("--output", type=str, default='/media/xinyu/SSD1T/data/TextOCR/masks_withbox/')
     args = parser.parse_args()
+    enl = TextRNet_HRNet_Wrapper(torch.device("cuda:0"), 'pretrained/texrnet_hrnet.pth')
 
-    if osp.isdir(args.input):
-        if not osp.exists(args.output):
-            os.makedirs(args.output)
-        assert osp.isdir(args.output), \
-            "When --input is a directory, --output must be a directory!"
-    elif osp.isfile(args.input):
-        assert not osp.isdir(args.output), \
-            "When --input is a file, --output must be a file!"
-    else:
-        assert False, "No such input!"
-
-    assert args.input != args.output, \
-        "--input and --output points to the same location, "\
-        "this is not allowed because it will override the input files."
-
-    if args.method == 'textrnet_hrnet':
-        wrapper = TextRNet_HRNet_Wrapper
-        model_path = 'pretrained/texrnet_hrnet.pth'
-    elif args.method == 'textrnet_deeplab':
-        wrapper = TextRNet_Deeplab_Wrapper
-        model_path = 'pretrained/texrnet_deeplab.pth'
-    else:
-        assert False, 'No such model.'
-
-    enl = wrapper(torch.device("cuda:0"), model_path)
-
-    if osp.isfile(args.input):
-        imgs = [args.input]
-        outs = [args.output]
-    else:
-        imgs = sorted(os.listdir(args.input))
-        outs = [
-            osp.join(args.output, '{}.png'.format(osp.splitext(fi)[0]))
-                for fi in imgs
-        ]
-        imgs = [osp.join(args.input, fi) for fi in imgs]
+    dataset = TextOCRDataset()
     
-    for fin, fout in tqdm(zip(imgs, outs), total=len(imgs)):
+
+    for fin, bboxes in tqdm(dataset):
         x = Image.open(fin).convert('RGB')
-        y = enl.process(x)
-        y.save(fout)
+        mask = enl.process(x)
+        for bbox in bboxes:
+            bbox = [int(coord) for coord in bbox]
+            text = x.crop(bbox)
+            text_mask = enl.process(text)
+            mask_tmp = Image.new("L", x.size)
+            mask_tmp.paste(text_mask, (bbox[0], bbox[1]))
+            mask = ImageChops.add(mask, mask_tmp)
+        mask.save(os.path.join(args.output, os.path.basename(fin)))
